@@ -17,6 +17,7 @@ import (
 
 	"github.com/aquasecurity/trivy/internal/testutil"
 	"github.com/aquasecurity/trivy/pkg/iac/terraform"
+	tfcontext "github.com/aquasecurity/trivy/pkg/iac/terraform/context"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/set"
 )
@@ -1704,6 +1705,224 @@ resource "test_resource" "this" {
 	assert.Equal(t, "test_value", attr.GetRawValue())
 }
 
+func TestBlockCount(t *testing.T) {
+	// `count` meta attributes are incorrectly handled when referencing
+	// a module output.
+	files := map[string]string{
+		"main.tf": `
+module "foo" {
+	source = "./modules/foo"
+}
+data "this_resource" "this" {
+	count = module.foo.staticZero
+}
+
+data "that_resource" "this" {
+	count = module.foo.staticFive
+}
+`,
+		"modules/foo/main.tf": `
+output "staticZero" {	
+	value = 0
+}
+output "staticFive" {	
+	value = 5
+}
+`,
+	}
+
+	modules := parse(t, files)
+	require.Len(t, modules, 2)
+
+	datas := modules.GetDatasByType("this_resource")
+	require.Empty(t, datas)
+
+	datas = modules.GetDatasByType("that_resource")
+	require.Len(t, datas, 5)
+}
+
+func TestBlockCountNested(t *testing.T) {
+	// `count` meta attributes are incorrectly handled when referencing
+	// a module output.
+	files := map[string]string{
+		"main.tf": `
+module "alpha" {
+  source = "./nestedcount"
+  set_count = 2
+}
+
+module "beta" {
+  source = "./nestedcount"
+  set_count = module.alpha.set_count
+}
+
+
+module "charlie" {
+  count = module.beta.set_count - 1
+  source = "./nestedcount"
+  set_count = module.beta.set_count
+}
+
+
+data "repeatable" "foo" {
+  count = module.charlie[0].set_count
+  value = "foo"
+}
+`,
+		"setcount/main.tf": `
+variable "set_count" {
+    type = number
+}
+
+output "set_count" {
+  value = var.set_count
+}
+`,
+		"nestedcount/main.tf": `
+variable "set_count" {
+  type = number
+}
+
+module "nested_mod" {
+  source = "../setcount"
+  set_count = var.set_count
+}
+
+output "set_count" {
+  value = module.nested_mod.set_count
+}
+`,
+	}
+
+	modules := parse(t, files)
+	require.Len(t, modules, 7)
+
+	datas := modules.GetDatasByType("repeatable")
+	assert.Len(t, datas, 2)
+}
+
+func TestBlockCountModules(t *testing.T) {
+	t.Skip("This test is currently failing, the 'count = 0' module 'bar' is still loaded")
+	// `count` meta attributes are incorrectly handled when referencing
+	// a module output.
+	files := map[string]string{
+		"main.tf": `
+module "foo" {
+	source = "./modules/foo"
+}
+
+module "bar" {
+	source = "./modules/foo"
+    count = module.foo.staticZero
+}
+`,
+		"modules/foo/main.tf": `
+output "staticZero" {	
+	value = 0
+}
+`,
+	}
+
+	modules := parse(t, files)
+	require.Len(t, modules, 2)
+}
+
+func TestPopulateContextWithBlockInstances(t *testing.T) {
+
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name: "data blocks with count",
+			files: map[string]string{
+				"main.tf": `data "d" "foo" {
+  count = 1
+  value = "Index ${count.index}"
+}
+
+data "b" "foo" {
+  count = 1
+  value = data.d.foo[0].value
+}
+
+data "c" "foo" {
+  count = 1
+  value = data.b.foo[0].value
+}`,
+			},
+		},
+		{
+			name: "resource blocks with count",
+			files: map[string]string{
+				"main.tf": `resource "d" "foo" {
+  count = 1
+  value = "Index ${count.index}"
+}
+
+resource "b" "foo" {
+  count = 1
+  value = d.foo[0].value
+}
+
+resource "c" "foo" {
+  count = 1
+  value = b.foo[0].value
+}`,
+			},
+		},
+		{
+			name: "data blocks with for_each",
+			files: map[string]string{
+				"main.tf": `data "d" "foo" {
+  for_each = toset([0])
+  value = "Index ${each.key}"
+}
+
+data "b" "foo" {
+  for_each = data.d.foo 
+  value = each.value.value
+}
+
+data "c" "foo" {
+  for_each = data.b.foo 
+  value = each.value.value
+}`,
+			},
+		},
+		{
+			name: "resource blocks with for_each",
+			files: map[string]string{
+				"main.tf": `resource "d" "foo" {
+  for_each = toset([0])
+  value = "Index ${each.key}"
+}
+
+resource "b" "foo" {
+  for_each = d.foo 
+  value = each.value.value
+}
+
+resource "c" "foo" {
+  for_each = b.foo 
+  value = each.value.value
+}`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			modules := parse(t, tt.files)
+			require.Len(t, modules, 1)
+			for _, b := range modules.GetBlocks() {
+				attr := b.GetAttribute("value")
+				assert.Equal(t, "Index 0", attr.Value().AsString())
+			}
+		})
+	}
+}
+
 // TestNestedModulesOptions ensures parser options are carried to the nested
 // submodule evaluators.
 // The test will include an invalid module that will fail to download
@@ -2125,6 +2344,80 @@ func TestTFVarsFileDoesNotExist(t *testing.T) {
 
 	_, _, err := parser.EvaluateAll(t.Context())
 	assert.ErrorContains(t, err, "file does not exist")
+}
+
+func Test_OptionsWithEvalHook(t *testing.T) {
+	fs := testutil.CreateFS(t, map[string]string{
+		"main.tf": `
+data "your_custom_data" "this" {
+  default = ["foo", "foh", "fum"]
+  unaffected = "bar"
+}
+
+// Testing the hook affects some value, which is used in another evaluateStep
+// action (expanding blocks)
+data "random_thing" "that" {
+  dynamic "repeated" {
+    for_each = data.your_custom_data.this.value
+	content {
+      value = repeated.value
+	}
+  }
+}
+
+locals {
+	referenced = data.your_custom_data.this.value
+	static_ref = data.your_custom_data.this.unaffected
+}
+`})
+
+	parser := New(fs, "", OptionWithEvalHook(
+		// A basic example of how to have a 'default' value for a data block.
+		// To see a more practical example, see how 'evaluateVariable' handles
+		// the 'default' value of a variable.
+		func(ctx *tfcontext.Context, blocks terraform.Blocks, inputVars map[string]cty.Value) {
+			dataBlocks := blocks.OfType("data")
+			for _, block := range dataBlocks {
+				if len(block.Labels()) >= 1 && block.Labels()[0] == "your_custom_data" {
+					def := block.GetAttribute("default")
+					ctx.Set(cty.ObjectVal(map[string]cty.Value{
+						"value": def.Value(),
+					}), "data", "your_custom_data", "this")
+				}
+			}
+
+		},
+	))
+
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+
+	modules, _, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, modules, 1)
+
+	rootModule := modules[0]
+
+	// Check the default value of the data block
+	blocks := rootModule.GetDatasByType("your_custom_data")
+	assert.Len(t, blocks, 1)
+	expList := cty.TupleVal([]cty.Value{cty.StringVal("foo"), cty.StringVal("foh"), cty.StringVal("fum")})
+	assert.True(t, expList.Equals(blocks[0].GetAttribute("default").Value()).True(), "default value matched list")
+	assert.Equal(t, "bar", blocks[0].GetAttribute("unaffected").Value().AsString())
+
+	// Check the referenced 'data.your_custom_data.this.value' exists in the eval
+	// context, and it is the default value of the data block.
+	locals := rootModule.GetBlocks().OfType("locals")
+	assert.Len(t, locals, 1)
+	assert.True(t, expList.Equals(locals[0].GetAttribute("referenced").Value()).True(), "referenced value matched list")
+	assert.Equal(t, "bar", locals[0].GetAttribute("static_ref").Value().AsString())
+
+	// Check the dynamic block is expanded correctly
+	dynamicBlocks := rootModule.GetDatasByType("random_thing")
+	assert.Len(t, dynamicBlocks, 1)
+	assert.Len(t, dynamicBlocks[0].GetBlocks("repeated"), 3)
+	for i, repeat := range dynamicBlocks[0].GetBlocks("repeated") {
+		assert.Equal(t, expList.Index(cty.NumberIntVal(int64(i))), repeat.GetAttribute("value").Value())
+	}
 }
 
 func Test_OptionsWithTfVars(t *testing.T) {
