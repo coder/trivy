@@ -39,7 +39,7 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.8.1
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/cheggaaa/pb/v3 v3.1.7
-	github.com/containerd/containerd/v2 v2.0.4
+	github.com/containerd/containerd/v2 v2.0.5
 	github.com/containerd/platforms v1.0.0-rc.1
 	github.com/distribution/reference v0.6.0
 	github.com/docker/cli v28.0.4+incompatible
@@ -381,7 +381,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/oauth2 v0.26.0 // indirect
+	golang.org/x/oauth2 v0.28.0 // indirect
 	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/telemetry v0.0.0-20240522233618-39ace7a40ae7 // indirect
 	golang.org/x/time v0.10.0 // indirect
