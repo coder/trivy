@@ -53,6 +53,9 @@ type Parser struct {
 	configsFS         fs.FS
 	skipPaths         []string
 	stepHooks         []EvaluateStepHook
+	// cwd is optional, if left to empty string, 'os.Getwd'
+	// will be used for populating 'path.cwd' in terraform.
+	cwd string
 }
 
 // New creates a new Parser
@@ -295,9 +298,14 @@ func (p *Parser) Load(_ context.Context) (*evaluator, error) {
 		)
 	}
 
-	workingDir, err := os.Getwd()
-	if err != nil {
-		return nil, err
+	var workingDir string
+	if p.cwd != "" {
+		workingDir = p.cwd
+	} else {
+		workingDir, err = os.Getwd()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	p.logger.Debug("Working directory for module evaluation", log.FilePath(workingDir))
