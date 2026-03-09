@@ -620,7 +620,7 @@ func (b *Block) expandDynamic() ([]*Block, error) {
 		return nil, fmt.Errorf("invalid for-each in %s block: %w", b.FullLocalName(), err)
 	}
 
-	if !forEachVal.IsKnown() {
+	if !forEachVal.IsWhollyKnown() {
 		return nil, errors.New("for-each must be known")
 	}
 
