@@ -344,3 +344,37 @@ output "out" {
 	assert.True(t, hasResourceNamed(root, "shared"), "resource referenced via a module argument was pruned")
 	assert.False(t, hasResourceNamed(root, "orphan"), "orphan resource should have been pruned")
 }
+
+// JSON templates (.tf.json) can merge several references in one expression into
+// a single reference during extraction, which would let the closure drop a
+// referenced resource. Pruning is therefore skipped entirely for JSON, so a
+// parameter default referencing two resources in one expression resolves
+// exactly as an unpruned run.
+func Test_OptionWithResourceClosure_SkippedForJSONTemplates(t *testing.T) {
+	fixture := `{
+  "data": {"coder_parameter": {"p": {"name": "p", "default": "${local.v}"}}},
+  "locals": {"v": "${my_resource.a.name}-${my_resource.b.name}"},
+  "resource": {"my_resource": {"a": {"name": "A"}, "b": {"name": "B"}}}
+}`
+	fs := testutil.CreateFS(map[string]string{"main.tf.json": fixture})
+
+	parser := New(fs, "",
+		OptionStopOnHCLError(true),
+		OptionWithResourceClosure([]string{"coder_parameter"}),
+	)
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+
+	modules, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, modules, 1)
+	root := modules[0]
+
+	// Pruning is skipped for JSON, so both resources survive and the parameter
+	// default resolves to the same value an unpruned evaluation produces.
+	assert.Len(t, root.GetResourcesByType("my_resource"), 2)
+	params := root.GetDatasByType("coder_parameter")
+	require.Len(t, params, 1)
+	def := params[0].GetAttribute("default").Value()
+	require.True(t, def.IsKnown() && !def.IsNull(), "parameter default became unknown")
+	assert.Equal(t, "A-B", def.AsString())
+}

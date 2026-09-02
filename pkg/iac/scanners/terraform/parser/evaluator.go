@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
@@ -335,6 +336,19 @@ func (e *evaluator) evaluateSteps() {
 // and prune nothing extra, so ambiguity always errs toward keeping resources.
 func (e *evaluator) pruneResourcesOutsideClosure() {
 	const blockTypeResource = "resource"
+
+	// JSON templates (.tf.json / .tofu.json) can merge several references in one
+	// expression into a single reference during extraction (see
+	// Attribute.referencesFromExpression), which would let the closure drop a
+	// resource a target actually depends on. Reference resolution there is not
+	// reliable enough to prune safely, so keep everything when any source file
+	// is JSON.
+	for _, b := range e.blocks {
+		name := b.GetMetadata().Range().GetFilename()
+		if strings.HasSuffix(name, ".tf.json") || strings.HasSuffix(name, ".tofu.json") {
+			return
+		}
+	}
 
 	targets := make(map[string]bool, len(e.resourceClosureTargets))
 	for _, t := range e.resourceClosureTargets {
