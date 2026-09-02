@@ -334,6 +334,8 @@ func (e *evaluator) evaluateSteps() {
 // References that cannot be resolved to a concrete block simply fail to match
 // and prune nothing extra, so ambiguity always errs toward keeping resources.
 func (e *evaluator) pruneResourcesOutsideClosure() {
+	const blockTypeResource = "resource"
+
 	targets := make(map[string]bool, len(e.resourceClosureTargets))
 	for _, t := range e.resourceClosureTargets {
 		targets[t] = true
@@ -348,7 +350,7 @@ func (e *evaluator) pruneResourcesOutsideClosure() {
 		// Output blocks are excluded from the frontier: nothing a target block
 		// reads can reference a module output, and root outputs commonly
 		// reference resources we want to prune.
-		if b.Type() == "resource" || b.Type() == "output" {
+		if b.Type() == blockTypeResource || b.Type() == "output" {
 			continue
 		}
 		frontier = append(frontier, blockReferences(b)...)
@@ -364,7 +366,7 @@ func (e *evaluator) pruneResourcesOutsideClosure() {
 	for i := 0; i < len(frontier); i++ {
 		ref := frontier[i]
 		for _, b := range e.blocks {
-			if b.Type() != "resource" || keep[b] {
+			if b.Type() != blockTypeResource || keep[b] {
 				continue
 			}
 			if refersToUnexpanded(ref, b) {
@@ -378,7 +380,7 @@ func (e *evaluator) pruneResourcesOutsideClosure() {
 	kept := make(terraform.Blocks, 0, len(e.blocks))
 	var pruned int
 	for _, b := range e.blocks {
-		if b.Type() == "resource" && !keep[b] {
+		if b.Type() == blockTypeResource && !keep[b] {
 			pruned++
 			continue
 		}
