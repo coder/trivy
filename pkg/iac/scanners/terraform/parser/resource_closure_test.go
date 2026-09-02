@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy/internal/testutil"
+	"github.com/aquasecurity/trivy/pkg/iac/terraform"
 )
 
 // A resource referenced by a parameter (transitively, through a local) must be
@@ -149,4 +150,197 @@ resource "my_resource" "indexed" {
 			assert.Equal(t, "large", def.AsString())
 		})
 	}
+}
+
+// hasResourceNamed reports whether any my_resource block with the given name
+// label survives in the module (count/for_each expands into multiple blocks
+// that share a name label).
+func hasResourceNamed(root *terraform.Module, name string) bool {
+	for _, r := range root.GetResourcesByType("my_resource") {
+		if r.NameLabel() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// A splat reference (my_resource.web[*].name) names the resource without a
+// concrete key, so the base block must be retained.
+func Test_OptionWithResourceClosure_SplatReferenceRetained(t *testing.T) {
+	fixture := `
+data "coder_parameter" "flavor" {
+  name    = "flavor"
+  default = local.joined
+}
+
+locals {
+  joined = join(",", my_resource.web[*].name)
+}
+
+resource "my_resource" "web" {
+  count = 2
+  name  = "large"
+}
+
+resource "my_resource" "orphan" {
+  name = "unused"
+}
+`
+	fs := testutil.CreateFS(map[string]string{"main.tf": fixture})
+
+	parser := New(fs, "",
+		OptionStopOnHCLError(true),
+		OptionWithResourceClosure([]string{"coder_parameter"}),
+	)
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+
+	modules, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, modules, 1)
+	root := modules[0]
+
+	// Orphan (a plain resource) is pruned. The splat-referenced resource is
+	// retained and evaluated, proven by the parameter default resolving to the
+	// joined names rather than becoming unknown.
+	assert.False(t, hasResourceNamed(root, "orphan"), "orphan resource should have been pruned")
+
+	params := root.GetDatasByType("coder_parameter")
+	require.Len(t, params, 1)
+	def := params[0].GetAttribute("default").Value()
+	require.True(t, def.IsKnown() && !def.IsNull(), "parameter default became unknown after pruning (splat resource pruned)")
+	assert.Equal(t, "large,large", def.AsString())
+}
+
+// A reference indexed by a variable (my_resource.pool[var.idx]) cannot be
+// statically resolved to a key, but the base resource must still be retained.
+func Test_OptionWithResourceClosure_DynamicIndexReferenceRetained(t *testing.T) {
+	fixture := `
+variable "idx" {
+  default = 1
+}
+
+data "coder_parameter" "flavor" {
+  name    = "flavor"
+  default = my_resource.pool[var.idx].name
+}
+
+resource "my_resource" "pool" {
+  count = 2
+  name  = "large"
+}
+
+resource "my_resource" "orphan" {
+  name = "unused"
+}
+`
+	fs := testutil.CreateFS(map[string]string{"main.tf": fixture})
+
+	parser := New(fs, "",
+		OptionStopOnHCLError(true),
+		OptionWithResourceClosure([]string{"coder_parameter"}),
+	)
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+
+	modules, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, modules, 1)
+	root := modules[0]
+
+	// Orphan (a plain resource) is pruned. The dynamically-indexed resource is
+	// retained and evaluated, proven by the parameter default resolving.
+	assert.False(t, hasResourceNamed(root, "orphan"), "orphan resource should have been pruned")
+
+	params := root.GetDatasByType("coder_parameter")
+	require.Len(t, params, 1)
+	def := params[0].GetAttribute("default").Value()
+	require.True(t, def.IsKnown() && !def.IsNull(), "parameter default became unknown after pruning (indexed resource pruned)")
+	assert.Equal(t, "large", def.AsString())
+}
+
+// A reference inside a parameter's nested block (an option value here) must be
+// followed: blockReferences recurses nested blocks, so the resource is kept.
+func Test_OptionWithResourceClosure_NestedBlockReferenceRetained(t *testing.T) {
+	fixture := `
+data "coder_parameter" "flavor" {
+  name = "flavor"
+
+  option {
+    name  = "only"
+    value = my_resource.x.name
+  }
+}
+
+resource "my_resource" "x" {
+  name = "large"
+}
+
+resource "my_resource" "orphan" {
+  name = "unused"
+}
+`
+	fs := testutil.CreateFS(map[string]string{"main.tf": fixture})
+
+	parser := New(fs, "",
+		OptionStopOnHCLError(true),
+		OptionWithResourceClosure([]string{"coder_parameter"}),
+	)
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+
+	modules, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, modules, 1)
+	root := modules[0]
+
+	assert.True(t, hasResourceNamed(root, "x"), "resource referenced from a nested option block was pruned")
+	assert.False(t, hasResourceNamed(root, "orphan"), "orphan resource should have been pruned")
+}
+
+// A resource referenced only through a module input argument must be retained:
+// the module block is part of the frontier, so its references seed the closure.
+func Test_OptionWithResourceClosure_ModuleArgReferenceRetained(t *testing.T) {
+	files := map[string]string{
+		"main.tf": `
+data "coder_parameter" "flavor" {
+  name    = "flavor"
+  default = "x"
+}
+
+module "m" {
+  source = "./mod"
+  in     = my_resource.shared.name
+}
+
+resource "my_resource" "shared" {
+  name = "large"
+}
+
+resource "my_resource" "orphan" {
+  name = "unused"
+}
+`,
+		"mod/main.tf": `
+variable "in" {
+  type = string
+}
+
+output "out" {
+  value = var.in
+}
+`,
+	}
+	fs := testutil.CreateFS(files)
+
+	parser := New(fs, "",
+		OptionStopOnHCLError(true),
+		OptionWithResourceClosure([]string{"coder_parameter"}),
+	)
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+
+	modules, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(modules), 1)
+	root := modules[0]
+
+	assert.True(t, hasResourceNamed(root, "shared"), "resource referenced via a module argument was pruned")
+	assert.False(t, hasResourceNamed(root, "orphan"), "orphan resource should have been pruned")
 }
