@@ -367,7 +367,7 @@ func (e *evaluator) pruneResourcesOutsideClosure() {
 			if b.Type() != "resource" || keep[b] {
 				continue
 			}
-			if ref.RefersTo(b.Reference()) {
+			if refersToUnexpanded(ref, b) {
 				keep[b] = true
 				// A retained resource may reference other resources.
 				frontier = append(frontier, blockReferences(b)...)
@@ -392,6 +392,18 @@ func (e *evaluator) pruneResourcesOutsideClosure() {
 		)
 	}
 	e.blocks = kept
+}
+
+// refersToUnexpanded reports whether ref names block b, ignoring any index key
+// on the reference. Pruning runs before count/for_each expansion, so b carries
+// no key while a reference such as my_resource.x[0] or my_resource.x["k"]
+// does; Reference.RefersTo would treat that as a different block and prune a
+// resource the target closure depends on.
+func refersToUnexpanded(ref *terraform.Reference, b *terraform.Block) bool {
+	blockRef := b.Reference()
+	return ref.BlockType() == blockRef.BlockType() &&
+		ref.TypeLabel() == blockRef.TypeLabel() &&
+		ref.NameLabel() == blockRef.NameLabel()
 }
 
 // blockReferences returns every reference made by a block, including references
