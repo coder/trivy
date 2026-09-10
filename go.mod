@@ -116,13 +116,13 @@ require (
 	github.com/zclconf/go-cty v1.17.0
 	github.com/zclconf/go-cty-yaml v1.1.0
 	go.etcd.io/bbolt v1.4.3
-	golang.org/x/crypto v0.46.0
-	golang.org/x/mod v0.31.0
-	golang.org/x/net v0.48.0
-	golang.org/x/sync v0.19.0
-	golang.org/x/term v0.38.0
-	golang.org/x/text v0.32.0
-	golang.org/x/tools v0.40.0
+	golang.org/x/crypto v0.52.0
+	golang.org/x/mod v0.35.0
+	golang.org/x/net v0.55.0
+	golang.org/x/sync v0.20.0
+	golang.org/x/term v0.43.0
+	golang.org/x/text v0.37.0
+	golang.org/x/tools v0.44.0
 	golang.org/x/vuln v1.1.4
 	golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9
 	google.golang.org/protobuf v1.36.11
@@ -220,7 +220,7 @@ require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cncf/xds/go v0.0.0-20251022180443-0feb69152e9f // indirect
 	github.com/containerd/cgroups/v3 v3.1.0 // indirect
-	github.com/containerd/containerd v1.7.29 // indirect
+	github.com/containerd/containerd v1.7.35 // indirect
 	github.com/containerd/containerd/api v1.10.0 // indirect
 	github.com/containerd/continuity v0.4.5 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
@@ -358,7 +358,7 @@ require (
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/moby/api v1.52.0 // indirect
 	github.com/moby/patternmatcher v0.6.0 // indirect
-	github.com/moby/spdystream v0.5.0 // indirect
+	github.com/moby/spdystream v0.5.1 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
@@ -377,7 +377,7 @@ require (
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/opencontainers/runtime-spec v1.2.1 // indirect
-	github.com/opencontainers/selinux v1.13.0 // indirect
+	github.com/opencontainers/selinux v1.13.1 // indirect
 	github.com/owenrumney/squealer v1.2.12 // indirect
 	github.com/pandatix/go-cvss v0.6.2 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
@@ -477,8 +477,8 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
 	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/telemetry v0.0.0-20251203150158-8fff8a5912fc // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260409153401-be6f6cb8b1fa // indirect
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools/gopls v0.21.0 // indirect
 	google.golang.org/api v0.260.0 // indirect
