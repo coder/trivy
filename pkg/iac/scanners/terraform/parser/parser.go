@@ -54,8 +54,12 @@ type Parser struct {
 	skipPaths         []string
 	// cwd is optional, if left to empty string, 'os.Getwd'
 	// will be used for populating 'path.cwd' in terraform.
-	cwd string
-	stepHooks         []EvaluateStepHook
+	cwd       string
+	stepHooks []EvaluateStepHook
+	// resourceClosureTargets, when non-empty, prunes root-module resource
+	// blocks that are not in the reference closure of these target block
+	// types before evaluation. See OptionWithResourceClosure.
+	resourceClosureTargets []string
 }
 
 // New creates a new Parser
@@ -325,6 +329,7 @@ func (p *Parser) Load(_ context.Context) (*evaluator, error) {
 		p.allowDownloads,
 		p.skipCachedModules,
 		p.stepHooks,
+		p.resourceClosureTargets,
 	), nil
 }
 

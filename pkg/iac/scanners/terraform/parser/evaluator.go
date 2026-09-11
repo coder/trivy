@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
@@ -42,6 +43,10 @@ type evaluator struct {
 	// stepHooks are functions that are called after each evaluation step.
 	// They can be used to provide additional semantics to other terraform blocks.
 	stepHooks []EvaluateStepHook
+	// resourceClosureTargets, when non-empty, prunes root-module resource
+	// blocks that are not reachable from these target block types before
+	// evaluation. See OptionWithResourceClosure.
+	resourceClosureTargets []string
 }
 
 func newEvaluator(
@@ -60,6 +65,7 @@ func newEvaluator(
 	allowDownloads bool,
 	skipCachedModules bool,
 	stepHooks []EvaluateStepHook,
+	resourceClosureTargets []string,
 ) *evaluator {
 
 	// create a context to store variables and make functions available
@@ -79,20 +85,21 @@ func newEvaluator(
 	}
 
 	return &evaluator{
-		filesystem:        target,
-		parentParser:      parentParser,
-		modulePath:        modulePath,
-		moduleName:        moduleName,
-		projectRootPath:   projectRootPath,
-		ctx:               ctx,
-		blocks:            blocks,
-		inputVars:         inputVars,
-		moduleMetadata:    moduleMetadata,
-		ignores:           ignores,
-		logger:            logger,
-		allowDownloads:    allowDownloads,
-		skipCachedModules: skipCachedModules,
-		stepHooks:         stepHooks,
+		filesystem:             target,
+		parentParser:           parentParser,
+		modulePath:             modulePath,
+		moduleName:             moduleName,
+		projectRootPath:        projectRootPath,
+		ctx:                    ctx,
+		blocks:                 blocks,
+		inputVars:              inputVars,
+		moduleMetadata:         moduleMetadata,
+		ignores:                ignores,
+		logger:                 logger,
+		allowDownloads:         allowDownloads,
+		skipCachedModules:      skipCachedModules,
+		stepHooks:              stepHooks,
+		resourceClosureTargets: resourceClosureTargets,
 	}
 }
 
@@ -142,6 +149,13 @@ func (e *evaluator) EvaluateAll(ctx context.Context) (terraform.Modules, map[str
 	fsKey := types.CreateFSKey(e.filesystem)
 	fsMap := map[string]fs.FS{
 		fsKey: e.filesystem,
+	}
+
+	// Optionally drop root-module resource blocks that no target block can
+	// depend on, before the (expensive) evaluation loop runs. Root-only so
+	// submodules are still evaluated in full.
+	if len(e.resourceClosureTargets) > 0 && e.moduleName == "root" {
+		e.pruneResourcesOutsideClosure()
 	}
 
 	e.evaluateSteps()
@@ -301,6 +315,125 @@ func (e *evaluator) evaluateSteps() {
 		}
 		maps.Copy(lastContext.Variables, e.ctx.Inner().Variables)
 	}
+}
+
+// pruneResourcesOutsideClosure drops root-module resource blocks that no
+// target block (see resourceClosureTargets) can depend on. It is a performance
+// optimization for callers that only need a subset of a module's output, such
+// as computing input parameters without evaluating the resources a workspace
+// would create.
+//
+// Safety rests on a simple dataflow argument: the frontier is seeded with the
+// references of every block that is neither a resource nor an output (i.e.
+// everything whose value can legitimately flow into a target block: variables,
+// locals, data sources, providers, module arguments, and the target blocks
+// themselves). A resource is retained if it is reachable from that frontier,
+// following references through resources that are themselves retained. A
+// resource is therefore only excluded when nothing a target block reads can
+// reference it, so the evaluated values of the target blocks are unchanged.
+//
+// References that cannot be resolved to a concrete block simply fail to match
+// and prune nothing extra, so ambiguity always errs toward keeping resources.
+func (e *evaluator) pruneResourcesOutsideClosure() {
+	const blockTypeResource = "resource"
+
+	// JSON templates (.tf.json / .tofu.json) can merge several references in one
+	// expression into a single reference during extraction (see
+	// Attribute.referencesFromExpression), which would let the closure drop a
+	// resource a target actually depends on. Reference resolution there is not
+	// reliable enough to prune safely, so keep everything when any source file
+	// is JSON.
+	for _, b := range e.blocks {
+		name := b.GetMetadata().Range().GetFilename()
+		if strings.HasSuffix(name, ".tf.json") || strings.HasSuffix(name, ".tofu.json") {
+			return
+		}
+	}
+
+	targets := make(map[string]bool, len(e.resourceClosureTargets))
+	for _, t := range e.resourceClosureTargets {
+		targets[t] = true
+	}
+
+	var frontier []*terraform.Reference
+	var haveTarget bool
+	for _, b := range e.blocks {
+		if targets[b.TypeLabel()] {
+			haveTarget = true
+		}
+		// Output blocks are excluded from the frontier: nothing a target block
+		// reads can reference a module output, and root outputs commonly
+		// reference resources we want to prune.
+		if b.Type() == blockTypeResource || b.Type() == "output" {
+			continue
+		}
+		frontier = append(frontier, blockReferences(b)...)
+	}
+
+	// Without a target block present, this is not a partial-evaluation context
+	// we understand, so keep everything.
+	if !haveTarget {
+		return
+	}
+
+	keep := make(map[*terraform.Block]bool)
+	for i := 0; i < len(frontier); i++ {
+		ref := frontier[i]
+		for _, b := range e.blocks {
+			if b.Type() != blockTypeResource || keep[b] {
+				continue
+			}
+			if refersToUnexpanded(ref, b) {
+				keep[b] = true
+				// A retained resource may reference other resources.
+				frontier = append(frontier, blockReferences(b)...)
+			}
+		}
+	}
+
+	kept := make(terraform.Blocks, 0, len(e.blocks))
+	var pruned int
+	for _, b := range e.blocks {
+		if b.Type() == blockTypeResource && !keep[b] {
+			pruned++
+			continue
+		}
+		kept = append(kept, b)
+	}
+	if pruned > 0 {
+		e.logger.Debug(
+			"Pruned resource blocks outside the target closure",
+			log.Int("pruned", pruned),
+			log.Int("kept", len(kept)),
+		)
+	}
+	e.blocks = kept
+}
+
+// refersToUnexpanded reports whether ref names block b, ignoring any index key
+// on the reference. Pruning runs before count/for_each expansion, so b carries
+// no key while a reference such as my_resource.x[0] or my_resource.x["k"]
+// does; Reference.RefersTo would treat that as a different block and prune a
+// resource the target closure depends on.
+func refersToUnexpanded(ref *terraform.Reference, b *terraform.Block) bool {
+	blockRef := b.Reference()
+	return ref.BlockType() == blockRef.BlockType() &&
+		ref.TypeLabel() == blockRef.TypeLabel() &&
+		ref.NameLabel() == blockRef.NameLabel()
+}
+
+// blockReferences returns every reference made by a block, including references
+// inside its nested blocks (for example coder_parameter option and validation
+// blocks).
+func blockReferences(b *terraform.Block) []*terraform.Reference {
+	var refs []*terraform.Reference
+	for _, attr := range b.GetAttributes() {
+		refs = append(refs, attr.AllReferences()...)
+	}
+	for _, child := range b.AllBlocks() {
+		refs = append(refs, blockReferences(child)...)
+	}
+	return refs
 }
 
 func (e *evaluator) expandBlocks(blocks terraform.Blocks) terraform.Blocks {

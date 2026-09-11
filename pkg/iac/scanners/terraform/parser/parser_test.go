@@ -2321,7 +2321,7 @@ locals {
 		// A basic example of how to have a 'default' value for a data block.
 		// To see a more practical example, see how 'evaluateVariable' handles
 		// the 'default' value of a variable.
-		func(ctx *tfcontext.Context, blocks terraform.Blocks, inputVars map[string]cty.Value) {
+		func(ctx *tfcontext.Context, blocks terraform.Blocks, inputVars map[string]cty.Value) { //nolint:revive // inputVars is part of the fixed OptionWithEvalHook callback signature
 			dataBlocks := blocks.OfType("data")
 			for _, block := range dataBlocks {
 				if len(block.Labels()) >= 1 && block.Labels()[0] == "your_custom_data" {
