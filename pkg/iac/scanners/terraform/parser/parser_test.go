@@ -3036,3 +3036,27 @@ func Test_MarkedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestRandomPresetLetsEvaluationConverge(t *testing.T) {
+	fs := testutil.CreateFS(map[string]string{
+		"main.tf": `
+resource "random_password" "this" {
+	length = 12
+}
+
+locals {
+	password = random_password.this.result
+}
+`,
+	})
+
+	var steps int
+	parser := New(fs, "", OptionStopOnHCLError(true), OptionWithEvalHook(
+		func(*tfcontext.Context, terraform.Blocks, map[string]cty.Value) { steps++ },
+	))
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+	_, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+
+	assert.Less(t, steps, maxContextIterations)
+}
