@@ -1725,6 +1725,43 @@ resource "test_resource" "this" {
 	assert.Equal(t, "test_value", attr.GetRawValue())
 }
 
+// A random_* preset is regenerated on every pass, so a submodule fed one never
+// reports unchanged inputs. That must not starve the submodules loaded after it.
+func TestSubmoduleWithUnstableInputDoesNotStarveLaterSubmodules(t *testing.T) {
+	files := map[string]string{
+		"main.tf": `
+resource "random_password" "this" {
+	length = 12
+}
+
+module "a_unstable" {
+	source = "./modules/sink"
+	value  = random_password.this.result
+}
+
+module "b_later" {
+	source = "./modules/leaf"
+}
+`,
+		"modules/sink/main.tf": `
+variable "value" {}
+
+resource "sink_resource" "this" {
+	value = var.value
+}
+`,
+		"modules/leaf/main.tf": `
+resource "leaf_resource" "this" {
+	name = "loaded"
+}
+`,
+	}
+
+	modules := parse(t, files)
+	require.Len(t, modules, 3)
+	require.Len(t, modules.GetResourcesByType("leaf_resource"), 1)
+}
+
 func TestPopulateContextWithBlockInstances(t *testing.T) {
 
 	tests := []struct {
@@ -2998,4 +3035,28 @@ func Test_MarkedValues(t *testing.T) {
 			require.Len(t, modules, 1)
 		})
 	}
+}
+
+func TestRandomPresetLetsEvaluationConverge(t *testing.T) {
+	fs := testutil.CreateFS(map[string]string{
+		"main.tf": `
+resource "random_password" "this" {
+	length = 12
+}
+
+locals {
+	password = random_password.this.result
+}
+`,
+	})
+
+	var steps int
+	parser := New(fs, "", OptionStopOnHCLError(true), OptionWithEvalHook(
+		func(*tfcontext.Context, terraform.Blocks, map[string]cty.Value) { steps++ },
+	))
+	require.NoError(t, parser.ParseFS(t.Context(), "."))
+	_, err := parser.EvaluateAll(t.Context())
+	require.NoError(t, err)
+
+	assert.Less(t, steps, maxContextIterations)
 }

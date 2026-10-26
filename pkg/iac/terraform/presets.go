@@ -1,8 +1,8 @@
 package terraform
 
 import (
+	"encoding/binary"
 	"fmt"
-	"math/rand/v2"
 	"strings"
 
 	"github.com/google/uuid"
@@ -38,17 +38,23 @@ func createPresetValues(b *Block) map[string]cty.Value {
 	case "aws_region":
 		presets["name"] = cty.StringVal("current-region")
 	case "random_integer":
-		//nolint:gosec
-		presets["result"] = cty.NumberIntVal(rand.Int64())
+		u := stablePlaceholder(b, "result")
+		presets["result"] = cty.NumberIntVal(int64(binary.BigEndian.Uint64(u[:8]) >> 1))
 	}
 
 	if attrs, exists := resourceRandomAttributes[b.TypeLabel()]; exists {
 		for _, attr := range attrs {
-			presets[attr] = cty.StringVal(uuid.New().String())
+			presets[attr] = cty.StringVal(stablePlaceholder(b, attr).String())
 		}
 	}
 
 	return presets
+}
+
+// stablePlaceholder derives a provider-generated value from the block and attribute, so it is
+// identical on every evaluation pass and the evaluator's fixed-point loop can converge.
+func stablePlaceholder(b *Block, attr string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(b.ID()+"."+attr))
 }
 
 func postProcessValues(b *Block, input map[string]cty.Value) map[string]cty.Value {
