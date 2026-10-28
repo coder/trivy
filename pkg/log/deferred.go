@@ -4,11 +4,12 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"sync"
 )
 
 func init() {
 	// Set the default logger so that logs are buffered until the logger is initialized.
-	slog.SetDefault(New(&DeferredHandler{records: new([]deferredRecord)}))
+	slog.SetDefault(New(&DeferredHandler{state: &deferredState{}}))
 }
 
 // DeferredHandler is needed to save logs and print them after calling `PrintLogs()` command.
@@ -18,8 +19,13 @@ type DeferredHandler struct {
 	attrs []slog.Attr
 
 	// Shared with all instances of the handler.
-	// NOTE: non-thread safe
-	records *[]deferredRecord
+	state *deferredState
+}
+
+type deferredState struct {
+	mu      sync.Mutex
+	records []deferredRecord
+	handler slog.Handler
 }
 
 type deferredRecord struct {
@@ -32,11 +38,22 @@ func (*DeferredHandler) Enabled(context.Context, slog.Level) bool {
 }
 
 func (d *DeferredHandler) Handle(ctx context.Context, record slog.Record) error {
+	record = record.Clone()
 	record.AddAttrs(d.attrs...)
-	*d.records = append(*d.records, deferredRecord{
+
+	d.state.mu.Lock()
+	if h := d.state.handler; h != nil {
+		d.state.mu.Unlock()
+		if h.Enabled(ctx, record.Level) {
+			return h.Handle(ctx, record)
+		}
+		return nil
+	}
+	d.state.records = append(d.state.records, deferredRecord{
 		ctx:    ctx,
 		Record: record,
 	})
+	d.state.mu.Unlock()
 	return nil
 }
 
@@ -52,11 +69,17 @@ func (*DeferredHandler) WithGroup(_ string) slog.Handler {
 }
 
 func (d *DeferredHandler) Flush(h slog.Handler) {
-	for _, record := range *d.records {
+	d.state.mu.Lock()
+	records := d.state.records
+	d.state.records = nil
+	// Existing loggers may still hold this handler after SetDefault.
+	d.state.handler = h
+	d.state.mu.Unlock()
+
+	for _, record := range records {
 		if !h.Enabled(record.ctx, record.Level) {
 			continue
 		}
 		_ = h.Handle(record.ctx, record.Record)
 	}
-	d.records = nil
 }
